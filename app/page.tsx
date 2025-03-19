@@ -1,11 +1,13 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { Bell, BellOff, MapPin } from "lucide-react"
+import { useState, useEffect, useCallback } from "react"
+import { Bell, BellOff, MapPin, CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useToast } from "@/hooks/use-toast"
+import { Input } from "@/components/ui/input"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 
 interface PrayerTime {
   name: string
@@ -19,6 +21,20 @@ interface Location {
   city: string
 }
 
+// Daftar kota-kota besar di Indonesia dengan koordinat
+const indonesianCities = [
+  { city: "Jakarta", latitude: -6.2088, longitude: 106.8456 },
+  { city: "Surabaya", latitude: -7.2575, longitude: 112.7521 },
+  { city: "Bandung", latitude: -6.9175, longitude: 107.6191 },
+  { city: "Medan", latitude: 3.5952, longitude: 98.6722 },
+  { city: "Semarang", latitude: -6.9932, longitude: 110.4203 },
+  { city: "Makassar", latitude: -5.1477, longitude: 119.4327 },
+  { city: "Palembang", latitude: -2.9761, longitude: 104.7754 },
+  { city: "Yogyakarta", latitude: -7.7971, longitude: 110.3688 },
+  { city: "Denpasar", latitude: -8.6705, longitude: 115.2126 },
+  { city: "Padang", latitude: -0.9471, longitude: 100.4172 },
+]
+
 export default function Home() {
   const [prayerTimes, setPrayerTimes] = useState<PrayerTime[]>([])
   const [imsakiyahSchedule, setImsakiyahSchedule] = useState<any[]>([])
@@ -26,198 +42,330 @@ export default function Home() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(false)
   const [currentDate, setCurrentDate] = useState(new Date())
   const [isLoading, setIsLoading] = useState(true)
+  const [searchTerm, setSearchTerm] = useState("")
+  const [isDialogOpen, setIsDialogOpen] = useState(false)
+  const [notificationStatus, setNotificationStatus] = useState<"default" | "granted" | "denied" | "unsupported">(
+    "default",
+  )
+  const [testStatus, setTestStatus] = useState<"idle" | "sending" | "success" | "error">("idle")
+  const [isBrowserReady, setIsBrowserReady] = useState(false)
   const { toast } = useToast()
 
-  // Mendapatkan lokasi pengguna
+  // Set browser ready state after component mounts
   useEffect(() => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          const { latitude, longitude } = position.coords
+    setIsBrowserReady(true)
+  }, [])
 
-          try {
-            // Mendapatkan nama kota berdasarkan koordinat
-            const response = await fetch(
-              `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=id`,
-            )
-            const data = await response.json()
+  // Cek status notifikasi saat komponen dimuat
+  useEffect(() => {
+    if (!isBrowserReady) return
 
-            setLocation({
-              latitude,
-              longitude,
-              city: data.city || data.locality || "Lokasi Anda",
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setNotificationStatus(Notification.permission as "default" | "granted" | "denied")
+    } else {
+      setNotificationStatus("unsupported")
+    }
+  }, [isBrowserReady])
+
+  // Mendapatkan lokasi pengguna atau menggunakan lokasi default
+  useEffect(() => {
+    if (!isBrowserReady) return
+
+    // Mulai dengan lokasi default (Jakarta)
+    const defaultLocation = {
+      latitude: -6.2088,
+      longitude: 106.8456,
+      city: "Jakarta",
+    }
+
+    // Set lokasi default terlebih dahulu agar UI dapat dirender
+    setLocation(defaultLocation)
+
+    // Coba dapatkan lokasi pengguna jika tersedia
+    if (typeof navigator !== "undefined" && navigator.geolocation) {
+      try {
+        navigator.geolocation.getCurrentPosition(
+          async (position) => {
+            const { latitude, longitude } = position.coords
+
+            try {
+              // Mendapatkan nama kota berdasarkan koordinat
+              const response = await fetch(
+                `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=id`,
+              )
+              const data = await response.json()
+
+              setLocation({
+                latitude,
+                longitude,
+                city: data.city || data.locality || "Lokasi Anda",
+              })
+
+              toast({
+                title: "Lokasi ditemukan",
+                description: `Menggunakan lokasi: ${data.city || data.locality || "Lokasi Anda"}`,
+              })
+            } catch (error) {
+              // Jika gagal mendapatkan nama kota, gunakan koordinat saja
+              setLocation({
+                latitude,
+                longitude,
+                city: "Lokasi Anda",
+              })
+            }
+          },
+          (error) => {
+            console.error("Error getting location:", error)
+            // Lokasi default sudah diset, jadi tidak perlu mengubah state lagi
+            toast({
+              title: "Tidak dapat mengakses lokasi",
+              description: "Menggunakan lokasi default (Jakarta). Anda dapat memilih kota secara manual.",
+              variant: "destructive",
             })
-          } catch (error) {
-            setLocation({
-              latitude,
-              longitude,
-              city: "Lokasi Anda",
-            })
-          }
-        },
-        (error) => {
-          console.error("Error getting location:", error)
-          toast({
-            title: "Gagal mendapatkan lokasi",
-            description: "Menggunakan lokasi default (Jakarta)",
-            variant: "destructive",
-          })
-
-          // Default ke Jakarta jika lokasi tidak tersedia
-          setLocation({
-            latitude: -6.2088,
-            longitude: 106.8456,
-            city: "Jakarta",
-          })
-        },
-      )
+          },
+          { timeout: 10000, enableHighAccuracy: false, maximumAge: 0 },
+        )
+      } catch (error) {
+        console.error("Geolocation error:", error)
+        // Lokasi default sudah diset, jadi tidak perlu mengubah state lagi
+      }
     } else {
       toast({
         title: "Geolokasi tidak didukung",
-        description: "Browser Anda tidak mendukung geolokasi",
+        description: "Browser Anda tidak mendukung geolokasi. Menggunakan lokasi default (Jakarta).",
         variant: "destructive",
       })
-
-      // Default ke Jakarta jika geolokasi tidak didukung
-      setLocation({
-        latitude: -6.2088,
-        longitude: 106.8456,
-        city: "Jakarta",
-      })
+      // Lokasi default sudah diset, jadi tidak perlu mengubah state lagi
     }
-  }, [toast])
+  }, [isBrowserReady, toast])
 
   // Mendapatkan waktu sholat berdasarkan lokasi
   useEffect(() => {
-    if (location) {
-      setIsLoading(true)
-      const fetchPrayerTimes = async () => {
-        try {
-          const date = new Date()
-          const year = date.getFullYear()
-          const month = date.getMonth() + 1
-          const day = date.getDate()
+    if (!location) return
 
-          const response = await fetch(
-            `https://api.aladhan.com/v1/timings/${day}-${month}-${year}?latitude=${location.latitude}&longitude=${location.longitude}&method=11`,
-          )
+    setIsLoading(true)
+    const fetchPrayerTimes = async () => {
+      try {
+        const date = new Date()
+        const year = date.getFullYear()
+        const month = date.getMonth() + 1
+        const day = date.getDate()
 
-          const data = await response.json()
-          const timings = data.data.timings
+        const response = await fetch(
+          `https://api.aladhan.com/v1/timings/${day}-${month}-${year}?latitude=${location.latitude}&longitude=${location.longitude}&method=11`,
+        )
 
-          const prayerTimesData: PrayerTime[] = [
-            { name: "Fajr", time: timings.Fajr, nameIndo: "Subuh" },
-            { name: "Sunrise", time: timings.Sunrise, nameIndo: "Terbit" },
-            { name: "Dhuhr", time: timings.Dhuhr, nameIndo: "Dzuhur" },
-            { name: "Asr", time: timings.Asr, nameIndo: "Ashar" },
-            { name: "Maghrib", time: timings.Maghrib, nameIndo: "Maghrib" },
-            { name: "Isha", time: timings.Isha, nameIndo: "Isya" },
-          ]
+        const data = await response.json()
+        const timings = data.data.timings
 
-          setPrayerTimes(prayerTimesData)
-          setIsLoading(false)
-        } catch (error) {
-          console.error("Error fetching prayer times:", error)
-          toast({
-            title: "Gagal mendapatkan jadwal sholat",
-            description: "Terjadi kesalahan saat mengambil data jadwal sholat",
-            variant: "destructive",
-          })
-          setIsLoading(false)
-        }
+        const prayerTimesData: PrayerTime[] = [
+          { name: "Fajr", time: timings.Fajr, nameIndo: "Subuh" },
+          { name: "Sunrise", time: timings.Sunrise, nameIndo: "Terbit" },
+          { name: "Dhuhr", time: timings.Dhuhr, nameIndo: "Dzuhur" },
+          { name: "Asr", time: timings.Asr, nameIndo: "Ashar" },
+          { name: "Maghrib", time: timings.Maghrib, nameIndo: "Maghrib" },
+          { name: "Isha", time: timings.Isha, nameIndo: "Isya" },
+        ]
+
+        setPrayerTimes(prayerTimesData)
+        setIsLoading(false)
+      } catch (error) {
+        console.error("Error fetching prayer times:", error)
+        toast({
+          title: "Gagal mendapatkan jadwal sholat",
+          description: "Terjadi kesalahan saat mengambil data jadwal sholat",
+          variant: "destructive",
+        })
+        setIsLoading(false)
       }
-
-      const fetchImsakiyahSchedule = async () => {
-        try {
-          // Mendapatkan jadwal imsakiyah untuk bulan Ramadhan
-          // Catatan: Ini adalah contoh data, dalam implementasi nyata Anda perlu menggunakan API yang sesuai
-          const date = new Date()
-          const year = date.getFullYear()
-          const month = 3 // Asumsi bulan Ramadhan (akan berbeda setiap tahun)
-
-          const response = await fetch(
-            `https://api.aladhan.com/v1/calendar/${year}/${month}?latitude=${location.latitude}&longitude=${location.longitude}&method=11`,
-          )
-
-          const data = await response.json()
-          const days = data.data
-
-          // Membuat jadwal imsakiyah untuk 30 hari
-          const imsakiyahData = days.map((day: any) => {
-            return {
-              date: day.date.readable,
-              imsak: day.timings.Imsak,
-              fajr: day.timings.Fajr,
-              maghrib: day.timings.Maghrib,
-            }
-          })
-
-          setImsakiyahSchedule(imsakiyahData)
-        } catch (error) {
-          console.error("Error fetching imsakiyah schedule:", error)
-          toast({
-            title: "Gagal mendapatkan jadwal imsakiyah",
-            description: "Terjadi kesalahan saat mengambil data jadwal imsakiyah",
-            variant: "destructive",
-          })
-        }
-      }
-
-      fetchPrayerTimes()
-      fetchImsakiyahSchedule()
-
-      // Update waktu saat ini setiap menit
-      const interval = setInterval(() => {
-        setCurrentDate(new Date())
-      }, 60000)
-
-      return () => clearInterval(interval)
     }
+
+    const fetchImsakiyahSchedule = async () => {
+      try {
+        // Mendapatkan jadwal imsakiyah untuk bulan Ramadhan
+        // Catatan: Ini adalah contoh data, dalam implementasi nyata Anda perlu menggunakan API yang sesuai
+        const date = new Date()
+        const year = date.getFullYear()
+        const month = 3 // Asumsi bulan Ramadhan (akan berbeda setiap tahun)
+
+        const response = await fetch(
+          `https://api.aladhan.com/v1/calendar/${year}/${month}?latitude=${location.latitude}&longitude=${location.longitude}&method=11`,
+        )
+
+        const data = await response.json()
+        const days = data.data
+
+        // Membuat jadwal imsakiyah untuk 30 hari
+        const imsakiyahData = days.map((day: any) => {
+          return {
+            date: day.date.readable,
+            imsak: day.timings.Imsak,
+            fajr: day.timings.Fajr,
+            maghrib: day.timings.Maghrib,
+          }
+        })
+
+        setImsakiyahSchedule(imsakiyahData)
+      } catch (error) {
+        console.error("Error fetching imsakiyah schedule:", error)
+        toast({
+          title: "Gagal mendapatkan jadwal imsakiyah",
+          description: "Terjadi kesalahan saat mengambil data jadwal imsakiyah",
+          variant: "destructive",
+        })
+      }
+    }
+
+    fetchPrayerTimes()
+    fetchImsakiyahSchedule()
+
+    // Update waktu saat ini setiap menit
+    const interval = setInterval(() => {
+      setCurrentDate(new Date())
+    }, 60000)
+
+    return () => clearInterval(interval)
   }, [location, toast])
 
   // Mengaktifkan notifikasi
-  const enableNotifications = async () => {
-    if (!("Notification" in window)) {
+  const toggleNotifications = useCallback(async () => {
+    if (!isBrowserReady) return
+
+    // Jika notifikasi sudah diaktifkan, matikan
+    if (notificationsEnabled) {
+      setNotificationsEnabled(false)
+      toast({
+        title: "Notifikasi dimatikan",
+        description: "Anda tidak akan menerima notifikasi adzan",
+      })
+      return
+    }
+
+    // Cek apakah browser mendukung notifikasi
+    if (typeof window === "undefined" || !("Notification" in window)) {
       toast({
         title: "Notifikasi tidak didukung",
         description: "Browser Anda tidak mendukung notifikasi",
         variant: "destructive",
       })
+      setNotificationStatus("unsupported")
       return
     }
 
+    // Jika izin sudah diberikan
     if (Notification.permission === "granted") {
       setNotificationsEnabled(true)
+      setNotificationStatus("granted")
+
       toast({
         title: "Notifikasi diaktifkan",
         description: "Anda akan menerima notifikasi adzan",
       })
-    } else if (Notification.permission !== "denied") {
-      const permission = await Notification.requestPermission()
+    }
+    // Jika izin belum diminta
+    else if (Notification.permission !== "denied") {
+      try {
+        const permission = await Notification.requestPermission()
+        setNotificationStatus(permission as "default" | "granted" | "denied")
 
-      if (permission === "granted") {
-        setNotificationsEnabled(true)
+        if (permission === "granted") {
+          setNotificationsEnabled(true)
+
+          toast({
+            title: "Notifikasi diaktifkan",
+            description: "Anda akan menerima notifikasi adzan",
+          })
+        } else {
+          toast({
+            title: "Izin notifikasi ditolak",
+            description: "Anda tidak akan menerima notifikasi adzan",
+            variant: "destructive",
+          })
+        }
+      } catch (error) {
+        console.error("Error requesting notification permission:", error)
         toast({
-          title: "Notifikasi diaktifkan",
-          description: "Anda akan menerima notifikasi adzan",
-        })
-      } else {
-        toast({
-          title: "Izin notifikasi ditolak",
-          description: "Anda tidak akan menerima notifikasi adzan",
+          title: "Gagal meminta izin notifikasi",
+          description: "Terjadi kesalahan saat meminta izin notifikasi",
           variant: "destructive",
         })
       }
     }
+    // Jika izin sudah ditolak sebelumnya
+    else {
+      toast({
+        title: "Izin notifikasi ditolak",
+        description: "Silakan ubah pengaturan notifikasi di browser Anda",
+        variant: "destructive",
+      })
+    }
+  }, [isBrowserReady, notificationsEnabled, toast])
+
+  // Kirim notifikasi test - pendekatan baru yang lebih sederhana
+  const testNotification = () => {
+    // Hanya jalankan di client-side
+    if (typeof window === "undefined") return
+
+    // Set status ke sending
+    setTestStatus("sending")
+
+    // Tunggu sebentar untuk efek visual
+    setTimeout(() => {
+      try {
+        // Cek apakah notifikasi didukung dan diizinkan
+        if (!("Notification" in window)) {
+          setTestStatus("error")
+          return
+        }
+
+        if (Notification.permission !== "granted") {
+          setTestStatus("error")
+          return
+        }
+
+        // Buat notifikasi test
+        const testNotif = new Notification("Test Notifikasi Adzan", {
+          body: `Ini adalah notifikasi test untuk wilayah ${location?.city || "Anda"}`,
+          icon: "/placeholder.svg?height=64&width=64",
+        })
+
+        // Tutup notifikasi setelah 5 detik
+        setTimeout(() => {
+          testNotif.close()
+        }, 5000)
+
+        // Set status ke success
+        setTestStatus("success")
+
+        // Reset status setelah 3 detik
+        setTimeout(() => {
+          setTestStatus("idle")
+        }, 3000)
+      } catch (error) {
+        console.error("Error sending test notification:", error)
+        setTestStatus("error")
+
+        // Reset status setelah 3 detik
+        setTimeout(() => {
+          setTestStatus("idle")
+        }, 3000)
+      }
+    }, 500)
   }
 
   // Memeriksa waktu sholat untuk notifikasi
   useEffect(() => {
-    if (notificationsEnabled && prayerTimes.length > 0) {
+    if (!isBrowserReady) return
+
+    if (notificationsEnabled && prayerTimes.length > 0 && notificationStatus === "granted") {
+      console.log("Notification monitoring active for prayer times")
+
       const checkPrayerTimes = () => {
         const now = new Date()
         const currentHour = now.getHours()
         const currentMinute = now.getMinutes()
+
+        console.log(`Checking prayer times at ${currentHour}:${currentMinute}`)
 
         prayerTimes.forEach((prayer) => {
           if (prayer.name === "Sunrise") return // Skip notifikasi untuk waktu matahari terbit
@@ -225,18 +373,32 @@ export default function Home() {
           const [hour, minute] = prayer.time.split(":").map(Number)
 
           if (currentHour === hour && currentMinute === minute) {
-            new Notification(`Waktu ${prayer.nameIndo}`, {
-              body: `Sekarang waktu ${prayer.nameIndo} untuk wilayah ${location?.city}`,
-              icon: "/placeholder.svg?height=64&width=64",
-            })
+            console.log(`Time match for ${prayer.nameIndo} at ${hour}:${minute}`)
+            try {
+              if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+                const notification = new Notification(`Waktu ${prayer.nameIndo}`, {
+                  body: `Sekarang waktu ${prayer.nameIndo} untuk wilayah ${location?.city}`,
+                  icon: "/placeholder.svg?height=64&width=64",
+                })
+
+                // Tutup notifikasi setelah 30 detik
+                setTimeout(() => notification.close(), 30000)
+              }
+            } catch (error) {
+              console.error("Error sending prayer time notification:", error)
+            }
           }
         })
       }
 
-      const interval = setInterval(checkPrayerTimes, 60000) // Periksa setiap menit
+      // Periksa segera saat diaktifkan
+      checkPrayerTimes()
+
+      // Kemudian periksa setiap menit
+      const interval = setInterval(checkPrayerTimes, 60000)
       return () => clearInterval(interval)
     }
-  }, [notificationsEnabled, prayerTimes, location])
+  }, [isBrowserReady, notificationsEnabled, prayerTimes, location, notificationStatus])
 
   // Format waktu
   const formatTime = (timeString: string) => {
@@ -264,9 +426,6 @@ export default function Home() {
     // Jika semua waktu sholat hari ini telah lewat, kembalikan waktu sholat pertama (Subuh)
     return prayerTimes[0]
   }
-
-  // Add this function to get today's Imsakiyah time
-  // Add it after the getNextPrayer function and before the formatDateIndo function
 
   // Mendapatkan waktu imsakiyah hari ini
   const getTodayImsakiyah = () => {
@@ -296,12 +455,51 @@ export default function Home() {
     return date.toLocaleDateString("id-ID", options)
   }
 
+  // Filter kota berdasarkan pencarian
+  const filteredCities = indonesianCities.filter((city) => city.city.toLowerCase().includes(searchTerm.toLowerCase()))
+
+  // Pilih kota
+  const selectCity = (city: (typeof indonesianCities)[0]) => {
+    setLocation({
+      latitude: city.latitude,
+      longitude: city.longitude,
+      city: city.city,
+    })
+    setIsDialogOpen(false)
+    toast({
+      title: "Lokasi diubah",
+      description: `Menggunakan lokasi: ${city.city}`,
+    })
+  }
+
   const nextPrayer = getNextPrayer()
 
-  const getTodayImsakiyahOld = () => {
-    const today = new Date().toLocaleDateString("en-CA")
-    const todayImsakiyah = imsakiyahSchedule.find((item) => item.date.startsWith(today))
-    return todayImsakiyah ? todayImsakiyah.imsak : "Memuat..."
+  // Mendapatkan teks status notifikasi
+  const getNotificationStatusText = () => {
+    switch (notificationStatus) {
+      case "granted":
+        return notificationsEnabled ? "Notifikasi Aktif" : "Notifikasi Diizinkan"
+      case "denied":
+        return "Notifikasi Ditolak"
+      case "unsupported":
+        return "Notifikasi Tidak Didukung"
+      default:
+        return "Aktifkan Notifikasi"
+    }
+  }
+
+  // Mendapatkan teks status test
+  const getTestButtonText = () => {
+    switch (testStatus) {
+      case "sending":
+        return "Mengirim..."
+      case "success":
+        return "Berhasil!"
+      case "error":
+        return "Gagal!"
+      default:
+        return "Test Notifikasi"
+    }
   }
 
   return (
@@ -313,8 +511,39 @@ export default function Home() {
 
           {location && (
             <div className="flex items-center justify-center mt-2 text-green-200">
-              <MapPin className="h-4 w-4 mr-1" />
-              <span>{location.city}</span>
+              <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="link" className="text-green-200 p-0 h-auto flex items-center">
+                    <MapPin className="h-4 w-4 mr-1" />
+                    <span>{location.city}</span>
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="bg-green-800 border-green-600 text-white">
+                  <DialogHeader>
+                    <DialogTitle>Pilih Kota</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-4">
+                    <Input
+                      placeholder="Cari kota..."
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      className="bg-green-700/50 border-green-600 text-white placeholder:text-green-300"
+                    />
+                    <div className="max-h-[300px] overflow-y-auto space-y-2">
+                      {filteredCities.map((city, index) => (
+                        <Button
+                          key={index}
+                          variant="ghost"
+                          className="w-full justify-start text-left hover:bg-green-700/50"
+                          onClick={() => selectCity(city)}
+                        >
+                          {city.city}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                </DialogContent>
+              </Dialog>
             </div>
           )}
         </div>
@@ -339,8 +568,11 @@ export default function Home() {
 
               <Button
                 variant="outline"
-                className="mt-4 w-full bg-green-600/30 border-green-500 hover:bg-green-600/50 text-white"
-                onClick={notificationsEnabled ? () => setNotificationsEnabled(false) : enableNotifications}
+                className={`mt-4 w-full border-green-500 hover:bg-green-600/50 text-white ${
+                  notificationsEnabled ? "bg-green-600" : "bg-green-600/30"
+                }`}
+                onClick={toggleNotifications}
+                disabled={!isBrowserReady || notificationStatus === "unsupported" || notificationStatus === "denied"}
               >
                 {notificationsEnabled ? (
                   <>
@@ -351,11 +583,38 @@ export default function Home() {
                 ) : (
                   <>
                     <Bell className="mr-2 h-4 w-4" />
-                    <span className="sm:inline">Aktifkan</span>
-                    <span className="hidden sm:inline"> Notifikasi</span>
+                    <span className="sm:inline">{getNotificationStatusText()}</span>
                   </>
                 )}
               </Button>
+
+              {notificationStatus === "denied" && (
+                <p className="mt-2 text-xs text-yellow-300">
+                  Notifikasi diblokir. Silakan ubah pengaturan browser Anda.
+                </p>
+              )}
+
+              {isBrowserReady && notificationsEnabled && notificationStatus === "granted" && (
+                <Button
+                  variant="outline"
+                  className={`mt-2 w-full border-green-500 text-white ${
+                    testStatus === "success"
+                      ? "bg-green-600"
+                      : testStatus === "error"
+                        ? "bg-red-600/70"
+                        : "bg-green-600/30 hover:bg-green-600/50"
+                  }`}
+                  onClick={testNotification}
+                  disabled={testStatus === "sending"}
+                >
+                  {testStatus === "success" ? (
+                    <CheckCircle className="mr-2 h-4 w-4" />
+                  ) : (
+                    <Bell className="mr-2 h-4 w-4" />
+                  )}
+                  <span>{getTestButtonText()}</span>
+                </Button>
+              )}
             </CardContent>
           </Card>
 
